@@ -87,9 +87,8 @@ void pcb_set_state(PCB *pcb, ProcessState state) {
     pcb->state = state;
 }
 
-const char* pcb_to_json(PCB *pcb) {
-    static char buf[1024];
-    snprintf(buf, sizeof(buf),
+void pcb_to_json(PCB *pcb, char *buf, size_t bufsize) {
+    snprintf(buf, bufsize,
         "{\"pid\":%d,\"name\":\"%s\",\"state\":\"%s\",\"priority\":\"%s\","
         "\"pc\":%d,\"burst_remaining\":%d,\"wait_time\":%d,"
         "\"blocked_reason\":\"%s\",\"command_ticks_remaining\":%d}",
@@ -102,5 +101,4 @@ const char* pcb_to_json(PCB *pcb) {
         block_reason_to_string(pcb->blocked_reason),
         pcb->command_ticks_remaining
     );
-    return buf;
 }

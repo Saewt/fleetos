@@ -98,17 +98,28 @@ void kernel_run(void) {
         /* 6. Scheduler tick (quantum check) */
         scheduler_tick(current_tick);
 
+        /* Increment wait_time for READY processes */
+        for (int i = 0; i < all_count; i++) {
+            if (all_procs[i]->state == READY) {
+                all_procs[i]->wait_time++;
+            }
+        }
+
         /* 7. JSON state snapshot every SNAPSHOT_INTERVAL ticks */
         if (current_tick % SNAPSHOT_INTERVAL == 0) {
-            char procs_json[4096] = "[";
+            char procs_json[8192];
+            size_t pos = 0;
+            pos += snprintf(procs_json + pos, sizeof(procs_json) - pos, "[");
             int added = 0;
             for (int i = 0; i < all_count; i++) {
                 if (all_procs[i]->state == TERMINATED) continue;
-                if (added > 0) strcat(procs_json, ",");
-                strcat(procs_json, pcb_to_json(all_procs[i]));
+                if (added > 0) pos += snprintf(procs_json + pos, sizeof(procs_json) - pos, ",");
+                char pcb_buf[1024];
+                pcb_to_json(all_procs[i], pcb_buf, sizeof(pcb_buf));
+                pos += snprintf(procs_json + pos, sizeof(procs_json) - pos, "%s", pcb_buf);
                 added++;
             }
-            strcat(procs_json, "]");
+            pos += snprintf(procs_json + pos, sizeof(procs_json) - pos, "]");
             logger_snapshot(current_tick, procs_json);
         }
 
@@ -119,7 +130,7 @@ void kernel_run(void) {
                 alive++;
             }
         }
-        if (alive == 0 && config.max_ticks <= 0) {
+        if (alive == 0) {
             logger_log(current_tick, "KERNEL", LOG_INFO, "All processes terminated", NULL);
             break;
         }

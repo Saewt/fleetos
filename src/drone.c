@@ -13,7 +13,7 @@ static void drone_set_commands(PCB *pcb, CommandType *cmds, int count, int burst
         pcb->commands[i] = cmds[i];
     }
     pcb->program_counter = 0;
-    pcb->command_ticks_remaining = 1;
+    pcb->command_ticks_remaining = 2;  /* COMPUTE and others take 2 ticks */
     pcb->burst_remaining = burst;
 }
 

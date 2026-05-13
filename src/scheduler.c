@@ -27,8 +27,17 @@ static int find_in_ready(PCB *pcb) {
 
 static void ready_remove_at(int idx) {
     if (ready_count <= 0) return;
-    for (int i = idx; i < ready_head + ready_count - 1; i++) {
-        ready_queue[i % MAX_READY_QUEUE] = ready_queue[(i + 1) % MAX_READY_QUEUE];
+    if (idx == ready_head) {
+        ready_head = (ready_head + 1) % MAX_READY_QUEUE;
+        ready_count--;
+        return;
+    }
+    int tail = (ready_head + ready_count - 1) % MAX_READY_QUEUE;
+    int i = idx;
+    while (i != tail) {
+        int next = (i + 1) % MAX_READY_QUEUE;
+        ready_queue[i] = ready_queue[next];
+        i = next;
     }
     ready_count--;
 }
@@ -100,6 +109,7 @@ PCB* scheduler_next(void) {
 
 void scheduler_block(PCB *pcb) {
     if (!pcb) return;
+    if (pcb->state == TERMINATED) return;
 
     pcb_set_state(pcb, BLOCKED);
 

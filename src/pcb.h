@@ -26,6 +26,6 @@ typedef struct {
 PCB* pcb_create(int pid, const char *name, Priority priority);
 void pcb_destroy(PCB *pcb);
 void pcb_set_state(PCB *pcb, ProcessState state);
-const char* pcb_to_json(PCB *pcb);
+void pcb_to_json(PCB *pcb, char *buf, size_t bufsize);
 
 #endif

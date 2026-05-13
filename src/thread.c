@@ -32,8 +32,7 @@ void thread_unblock(TCB *tcb) {
     }
 }
 
-const char* thread_to_json(TCB *tcb) {
-    static char buf[256];
+void thread_to_json(TCB *tcb, char *buf, size_t bufsize) {
     const char *state_str;
     switch (tcb->state) {
         case T_READY:   state_str = "T_READY"; break;
@@ -42,8 +41,7 @@ const char* thread_to_json(TCB *tcb) {
         case T_DONE:    state_str = "T_DONE"; break;
         default:        state_str = "UNKNOWN"; break;
     }
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, bufsize,
         "{\"tid\":%d,\"owner_pid\":%d,\"state\":\"%s\",\"local_pc\":%d}",
         tcb->tid, tcb->owner_pid, state_str, tcb->local_pc);
-    return buf;
 }
