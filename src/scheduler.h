@@ -4,12 +4,16 @@
 #include "common.h"
 #include "pcb.h"
 
-void scheduler_init(void);
+#define MAX_READY_QUEUE MAX_PROCS
+
+void scheduler_init(SchedMode mode);
 void scheduler_add(PCB *pcb);
 PCB* scheduler_next(void);
 void scheduler_block(PCB *pcb);
 void scheduler_unblock(PCB *pcb);
-void scheduler_tick(void);
+int scheduler_tick(int current_tick);
 void scheduler_priority_boost(void);
+PCB* scheduler_get_current(void);
+PCB** scheduler_get_all_procs(int *count);
 
 #endif

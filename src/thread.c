@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "thread.h"
 
 TCB* thread_create(int tid, int owner_pid) {
@@ -32,9 +33,17 @@ void thread_unblock(TCB *tcb) {
 }
 
 const char* thread_to_json(TCB *tcb) {
-    (void)tcb;
     static char buf[256];
-    /* TODO: Implement full JSON serialization */
-    buf[0] = '\0';
+    const char *state_str;
+    switch (tcb->state) {
+        case T_READY:   state_str = "T_READY"; break;
+        case T_RUNNING: state_str = "T_RUNNING"; break;
+        case T_BLOCKED: state_str = "T_BLOCKED"; break;
+        case T_DONE:    state_str = "T_DONE"; break;
+        default:        state_str = "UNKNOWN"; break;
+    }
+    snprintf(buf, sizeof(buf),
+        "{\"tid\":%d,\"owner_pid\":%d,\"state\":\"%s\",\"local_pc\":%d}",
+        tcb->tid, tcb->owner_pid, state_str, tcb->local_pc);
     return buf;
 }

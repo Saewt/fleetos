@@ -18,6 +18,9 @@ typedef struct {
     BlockReason blocked_reason;
     int held_resources[4];
     int requested_resource;
+    CommandType commands[MAX_COMMANDS];
+    int command_count;
+    int command_ticks_remaining;
 } PCB;
 
 PCB* pcb_create(int pid, const char *name, Priority priority);
