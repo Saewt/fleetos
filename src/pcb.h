@@ -18,11 +18,14 @@ typedef struct {
     BlockReason blocked_reason;
     int held_resources[4];
     int requested_resource;
+    CommandType commands[MAX_COMMANDS];
+    int command_count;
+    int command_ticks_remaining;
 } PCB;
 
 PCB* pcb_create(int pid, const char *name, Priority priority);
 void pcb_destroy(PCB *pcb);
 void pcb_set_state(PCB *pcb, ProcessState state);
-const char* pcb_to_json(PCB *pcb);
+void pcb_to_json(PCB *pcb, char *buf, size_t bufsize);
 
 #endif

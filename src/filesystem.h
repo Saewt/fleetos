@@ -22,6 +22,7 @@ int fs_create(const char *path);
 int fs_write(const char *path, const char *data, int size);
 int fs_read(const char *path, char *buf, int size);
 int fs_delete(const char *path);
-void fs_list(void);
+int fs_get_file_count(void);
+void fs_to_json(char *buf, size_t bufsize);
 
 #endif
