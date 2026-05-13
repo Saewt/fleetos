@@ -1,0 +1,9 @@
+*.o
+drone_fleet_os
+*.dSYM/
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+.DS_Store
