@@ -77,5 +77,13 @@ int main(int argc, char *argv[]) {
     kernel_run();
     kernel_shutdown();
 
+    if (config.compare_enabled) {
+        printf("\n");
+        config.sched_mode = (config.sched_mode == SCHED_RR) ? SCHED_MLFQ : SCHED_RR;
+        kernel_init(config);
+        kernel_run();
+        kernel_shutdown();
+    }
+
     return 0;
 }

@@ -37,6 +37,8 @@ static PCB* find_proc(int pid) {
     return NULL;
 }
 
+static int deadlock_phase[MAX_PROCS];
+
 static void block_process(PCB *pcb, BlockReason reason, int tick) {
     if (!pcb || pcb->state == BLOCKED) return;
     pcb->blocked_reason = reason;
@@ -56,6 +58,26 @@ static void unblock_process(PCB *pcb, int tick) {
     logger_log(tick, "SCHED", LOG_INFO, "Process unblocked", data);
 }
 
+static void deadlock_wake_callback(int pid, int tick) {
+    PCB *proc = find_proc(pid);
+    if (proc && proc->state == BLOCKED && proc->blocked_reason == RESOURCE_WAIT) {
+        unblock_process(proc, tick);
+    }
+}
+
+static void crash_process(PCB *pcb, int tick) {
+    if (!pcb) return;
+    char data[128];
+    snprintf(data, sizeof(data), "{\"pid\":%d,\"name\":\"%s\"}",
+             pcb->pid, pcb->name);
+    logger_log(tick, "FAULT", LOG_CRITICAL, "Drone crash injected", data);
+
+    deadlock_cleanup_process(pcb->pid);
+    mem_free_process(pcb);
+    pcb_set_state(pcb, TERMINATED);
+    scheduler_block(pcb, tick);
+}
+
 void kernel_init(KernelConfig cfg) {
     config = cfg;
     current_tick = 0;
@@ -70,7 +92,10 @@ void kernel_init(KernelConfig cfg) {
     mem_init();
     fs_init();
     deadlock_init();
+    deadlock_set_victim_callback(deadlock_wake_callback);
     buffer_init(&sensor_buf);
+
+    memset(deadlock_phase, 0, sizeof(deadlock_phase));
 
     all_procs[0] = drone_create_flight(0);
     all_procs[1] = drone_create_battery(1);
@@ -99,6 +124,19 @@ void kernel_init(KernelConfig cfg) {
         config.crash_enabled ? "true" : "false",
         config.compare_enabled ? "true" : "false");
     logger_log(0, "KERNEL", LOG_INFO, "Simulation started", config_json);
+}
+
+static void compact_pending_events(void) {
+    int write = 0;
+    for (int read = 0; read < pending_count; read++) {
+        if (pending_events[read].active) {
+            if (write != read) {
+                pending_events[write] = pending_events[read];
+            }
+            write++;
+        }
+    }
+    pending_count = write;
 }
 
 static void complete_io_events(void) {
@@ -203,6 +241,7 @@ void kernel_run(void) {
         }
 
         mem_set_tick(current_tick);
+        deadlock_set_tick(current_tick);
 
         /* 1. Check new arrivals */
         for (int i = 0; i < all_count; i++) {
@@ -221,6 +260,8 @@ void kernel_run(void) {
 
         /* 3. Complete pending page faults */
         complete_page_faults();
+
+        compact_pending_events();
 
         /* 4. Ensure we have a running process */
         PCB *current = scheduler_get_current();
@@ -267,7 +308,31 @@ void kernel_run(void) {
                 }
 
                 case CMD_ACQUIRE_RESOURCE:
-                    drone_execute(current);
+                    if (config.deadlock_enabled) {
+                        int rid;
+                        if (current->pid == 0) {
+                            rid = (deadlock_phase[0] == 0) ? RESOURCE_LANDING_PAD : RESOURCE_CHARGE_STATION;
+                        } else if (current->pid == 1) {
+                            rid = (deadlock_phase[1] == 0) ? RESOURCE_CHARGE_STATION : RESOURCE_LANDING_PAD;
+                        } else {
+                            rid = RESOURCE_COMM_CHANNEL;
+                        }
+                        int result = deadlock_request(current->pid, rid);
+                        if (result < 0) {
+                            block_process(current, RESOURCE_WAIT, current_tick);
+                        } else {
+                            char data[128];
+                            snprintf(data, sizeof(data), "{\"pid\":%d,\"rid\":%d,\"resource\":\"%s\"}",
+                                     current->pid, rid, deadlock_resource_name(rid));
+                            logger_log(current_tick, "DEADLOCK", LOG_INFO, "Resource acquired", data);
+                            deadlock_phase[current->pid]++;
+                            current->program_counter = (current->program_counter + 1) % current->command_count;
+                            current->command_ticks_remaining = 1;
+                            current->burst_remaining--;
+                        }
+                    } else {
+                        drone_execute(current);
+                    }
                     break;
 
                 case CMD_IO_WRITE: {
@@ -281,7 +346,9 @@ void kernel_run(void) {
                              current->pid, path, IO_DURATION);
                     logger_log(current_tick, "FS", LOG_INFO, "I/O write started", data);
 
-                    drone_execute(current);
+                    current->program_counter = (current->program_counter + 1) % current->command_count;
+                    current->command_ticks_remaining = 1;
+                    current->burst_remaining--;
 
                     block_process(current, IO_BLOCK, current_tick);
 
@@ -308,6 +375,25 @@ void kernel_run(void) {
                          current->pid, current->name);
                 logger_log(current_tick, "KERNEL", LOG_INFO, "Process terminated", data);
                 scheduler_block(current, current_tick);
+            }
+        }
+
+        /* 5.5. Deadlock detection every 10 ticks */
+        if (current_tick > 0 && current_tick % 10 == 0) {
+            int victim;
+            if (deadlock_detect(&victim)) {
+                PCB *victim_proc = find_proc(victim);
+                if (victim_proc) {
+                    crash_process(victim_proc, current_tick);
+                }
+            }
+        }
+
+        /* 5.6. Crash injection */
+        if (config.crash_enabled && current_tick == 30) {
+            PCB *current = scheduler_get_current();
+            if (current && current->state == RUNNING) {
+                crash_process(current, current_tick);
             }
         }
 
@@ -376,6 +462,7 @@ void kernel_run(void) {
 
 void kernel_shutdown(void) {
     running = 0;
+    mem_set_tick(current_tick);
     for (int i = 0; i < all_count; i++) {
         mem_free_process(all_procs[i]);
         pcb_destroy(all_procs[i]);
