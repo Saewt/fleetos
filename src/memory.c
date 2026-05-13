@@ -4,16 +4,13 @@
 #include "logger.h"
 
 static PhysicalMemory mem;
-static PendingPageFault pending_faults[MAX_PROCS];
-static int pending_count = 0;
 
 void mem_init(void) {
     memset(mem.frames, -1, sizeof(mem.frames));
+    memset(mem.frame_pages, -1, sizeof(mem.frame_pages));
     memset(mem.last_access, 0, sizeof(mem.last_access));
     mem.free_frame_count = FRAME_COUNT;
     mem.current_tick = 0;
-    pending_count = 0;
-    memset(pending_faults, 0, sizeof(pending_faults));
 }
 
 void mem_set_tick(int tick) {
@@ -39,24 +36,40 @@ static int select_lru_victim(void) {
     return oldest;
 }
 
-int mem_allocate_page(PCB *pcb, int page) {
+int mem_allocate_page(PCB *pcb, int page, EvictionInfo *eviction) {
     if (!pcb || page < 0 || page >= MAX_PAGES) return -1;
     if (pcb->page_table[page] != -1) return pcb->page_table[page];
+
+    if (eviction) {
+        eviction->evicted = 0;
+        eviction->victim_pid = -1;
+        eviction->victim_page = -1;
+        eviction->frame = -1;
+    }
 
     int frame = find_free_frame();
     if (frame < 0) {
         frame = select_lru_victim();
         int old_pid = mem.frames[frame];
+        int old_page = mem.frame_pages[frame];
+
+        if (eviction) {
+            eviction->evicted = 1;
+            eviction->victim_pid = old_pid;
+            eviction->victim_page = old_page;
+            eviction->frame = frame;
+        }
 
         char data[128];
-        snprintf(data, sizeof(data), "{\"pid\":%d,\"frame\":%d,\"victim_pid\":%d}",
-                 pcb->pid, frame, old_pid);
+        snprintf(data, sizeof(data), "{\"pid\":%d,\"frame\":%d,\"victim_pid\":%d,\"victim_page\":%d}",
+                 pcb->pid, frame, old_pid, old_page);
         logger_log(mem.current_tick, "MEM", LOG_WARN, "Page evicted via LRU", data);
     } else {
         mem.free_frame_count--;
     }
 
     mem.frames[frame] = pcb->pid;
+    mem.frame_pages[frame] = page;
     mem.last_access[frame] = mem.current_tick;
 
     pcb->page_table[page] = frame;
@@ -93,6 +106,7 @@ void mem_free_process(PCB *pcb) {
     for (int i = 0; i < FRAME_COUNT; i++) {
         if (mem.frames[i] == pcb->pid) {
             mem.frames[i] = -1;
+            mem.frame_pages[i] = -1;
             mem.free_frame_count++;
         }
     }
@@ -102,37 +116,6 @@ void mem_free_process(PCB *pcb) {
     char data[64];
     snprintf(data, sizeof(data), "{\"pid\":%d}", pcb->pid);
     logger_log(mem.current_tick, "MEM", LOG_INFO, "Process memory freed", data);
-}
-
-int mem_has_pending_fault(int pid, int *page, int *completion_tick) {
-    for (int i = 0; i < pending_count; i++) {
-        if (pending_faults[i].active && pending_faults[i].pid == pid) {
-            if (mem.current_tick >= pending_faults[i].completion_tick) {
-                if (page) *page = pending_faults[i].page;
-                if (completion_tick) *completion_tick = pending_faults[i].completion_tick;
-                pending_faults[i].active = 0;
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
-
-void mem_resolve_fault(int pid, int page) {
-    for (int i = 0; i < pending_count; i++) {
-        if (pending_faults[i].active && pending_faults[i].pid == pid &&
-            pending_faults[i].page == page) {
-            pending_faults[i].active = 0;
-            return;
-        }
-    }
-    if (pending_count < MAX_PROCS) {
-        pending_faults[pending_count].pid = pid;
-        pending_faults[pending_count].page = page;
-        pending_faults[pending_count].completion_tick = mem.current_tick + PAGE_FAULT_DURATION;
-        pending_faults[pending_count].active = 1;
-        pending_count++;
-    }
 }
 
 int mem_get_page_count(PCB *pcb) {

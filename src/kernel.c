@@ -40,7 +40,7 @@ static PCB* find_proc(int pid) {
 static void block_process(PCB *pcb, BlockReason reason, int tick) {
     if (!pcb || pcb->state == BLOCKED) return;
     pcb->blocked_reason = reason;
-    scheduler_block(pcb);
+    scheduler_block(pcb, tick);
     char data[128];
     snprintf(data, sizeof(data), "{\"pid\":%d,\"reason\":\"%s\"}",
              pcb->pid, block_reason_to_string(reason));
@@ -82,8 +82,8 @@ void kernel_init(KernelConfig cfg) {
         if (!all_procs[i]) continue;
         all_procs[i]->arrival_time = drone_get_arrival_time(i);
 
-        mem_allocate_page(all_procs[i], 0);
-        mem_allocate_page(all_procs[i], 1);
+        mem_allocate_page(all_procs[i], 0, NULL);
+        mem_allocate_page(all_procs[i], 1, NULL);
 
         if (all_procs[i]->arrival_time == 0) {
             pcb_set_state(all_procs[i], READY);
@@ -108,6 +108,12 @@ static void complete_io_events(void) {
         if (current_tick >= pending_events[i].completion_tick) {
             PCB *proc = find_proc(pending_events[i].pid);
             if (proc && proc->blocked_reason == IO_BLOCK) {
+                char write_data[64];
+                snprintf(write_data, sizeof(write_data),
+                    "drone=%d tick=%d sensor_data",
+                    proc->pid, pending_events[i].completion_tick);
+                fs_write(pending_events[i].path, write_data, (int)strlen(write_data));
+
                 char data[256];
                 snprintf(data, sizeof(data), "{\"pid\":%d,\"path\":\"%s\"}",
                          pending_events[i].pid, pending_events[i].path);
@@ -126,7 +132,15 @@ static void complete_page_faults(void) {
         if (current_tick >= pending_events[i].completion_tick) {
             PCB *proc = find_proc(pending_events[i].pid);
             if (proc) {
-                mem_allocate_page(proc, pending_events[i].page);
+                EvictionInfo ei;
+                mem_allocate_page(proc, pending_events[i].page, &ei);
+                if (ei.evicted) {
+                    PCB *victim = find_proc(ei.victim_pid);
+                    if (victim && ei.victim_page >= 0) {
+                        victim->page_table[ei.victim_page] = -1;
+                        victim->pages_used--;
+                    }
+                }
                 logger_log(current_tick, "MEM", LOG_INFO, "Page fault resolved", NULL);
             }
             if (proc && proc->blocked_reason == PAGE_FAULT) {
@@ -211,7 +225,7 @@ void kernel_run(void) {
         /* 4. Ensure we have a running process */
         PCB *current = scheduler_get_current();
         if (!current || current->state != RUNNING) {
-            scheduler_next();
+            scheduler_next(current_tick);
             current = scheduler_get_current();
         }
 
@@ -293,7 +307,7 @@ void kernel_run(void) {
                 snprintf(data, sizeof(data), "{\"pid\":%d,\"name\":\"%s\"}",
                          current->pid, current->name);
                 logger_log(current_tick, "KERNEL", LOG_INFO, "Process terminated", data);
-                scheduler_block(current);
+                scheduler_block(current, current_tick);
             }
         }
 

@@ -11,7 +11,6 @@ static PCB *current_proc = NULL;
 static SchedMode sched_mode = SCHED_RR;
 static int quantum_remaining = 0;
 static int context_switches = 0;
-static int last_tick = 0;
 
 static PCB *proc_table[MAX_PROCS];
 static int proc_count = 0;
@@ -47,11 +46,15 @@ void scheduler_init(SchedMode mode) {
     ready_count = 0;
     current_proc = NULL;
     sched_mode = mode;
-    quantum_remaining = SCHED_QUANTUM_RR;
     context_switches = 0;
     proc_count = 0;
     memset(ready_queue, 0, sizeof(ready_queue));
     memset(proc_table, 0, sizeof(proc_table));
+
+    if (mode == SCHED_MLFQ) {
+        logger_log(0, "SCHED", LOG_WARN, "MLFQ not implemented, using RR fallback", NULL);
+    }
+    quantum_remaining = SCHED_QUANTUM_RR;
 }
 
 void scheduler_add(PCB *pcb) {
@@ -73,7 +76,7 @@ void scheduler_add(PCB *pcb) {
     }
 }
 
-PCB* scheduler_next(void) {
+PCB* scheduler_next(int tick) {
     if (ready_count <= 0) {
         return current_proc;
     }
@@ -96,7 +99,7 @@ PCB* scheduler_next(void) {
         char data[64];
         snprintf(data, sizeof(data), "{\"from\":%d,\"to\":%d,\"quantum\":%d}",
                  from_pid, to_pid, quantum_remaining);
-        logger_log(last_tick, "SCHED", LOG_INFO, "Context switch", data);
+        logger_log(tick, "SCHED", LOG_INFO, "Context switch", data);
     }
 
     current_proc = next;
@@ -107,7 +110,7 @@ PCB* scheduler_next(void) {
     return current_proc;
 }
 
-void scheduler_block(PCB *pcb) {
+void scheduler_block(PCB *pcb, int tick) {
     if (!pcb) return;
     if (pcb->state == TERMINATED) return;
 
@@ -115,7 +118,7 @@ void scheduler_block(PCB *pcb) {
 
     if (current_proc == pcb) {
         current_proc = NULL;
-        scheduler_next();
+        scheduler_next(tick);
     } else {
         int idx = find_in_ready(pcb);
         if (idx >= 0) {
@@ -129,16 +132,15 @@ void scheduler_unblock(PCB *pcb) {
     scheduler_add(pcb);
 }
 
-int scheduler_tick(int current_tick) {
-    last_tick = current_tick;
+int scheduler_tick(int tick) {
     if (!current_proc) {
-        scheduler_next();
+        scheduler_next(tick);
         return 1;
     }
 
     quantum_remaining--;
     if (quantum_remaining <= 0) {
-        scheduler_next();
+        scheduler_next(tick);
         return 1;
     }
     return 0;
