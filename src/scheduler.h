@@ -6,12 +6,18 @@
 
 #define MAX_READY_QUEUE MAX_PROCS
 
+typedef struct {
+    PCB *queue[MAX_PROCS];
+    int head;
+    int count;
+} ReadyQueue;
+
 void scheduler_init(SchedMode mode);
 void scheduler_add(PCB *pcb);
-PCB* scheduler_next(void);
-void scheduler_block(PCB *pcb);
+PCB* scheduler_next(int tick);
+void scheduler_block(PCB *pcb, int tick);
 void scheduler_unblock(PCB *pcb);
-int scheduler_tick(int current_tick);
+int scheduler_tick(int tick);
 void scheduler_priority_boost(void);
 PCB* scheduler_get_current(void);
 PCB** scheduler_get_all_procs(int *count);
