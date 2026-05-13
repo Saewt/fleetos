@@ -1,0 +1,27 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    margin: 0;
+    padding: 20px;
+}
+
+h1 {
+    color: #00d4aa;
+}
+
+#status {
+    padding: 10px;
+    background: #16213e;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+#logs {
+    background: #0f3460;
+    padding: 10px;
+    border-radius: 4px;
+    height: 400px;
+    overflow-y: auto;
+    font-family: monospace;
+}

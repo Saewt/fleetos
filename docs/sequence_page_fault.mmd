@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant P as Process
+    participant M as Memory
+    participant S as Scheduler
+    P->>M: Access virtual address
+    M-->>P: Page fault!
+    P->>S: Block (PAGE_FAULT)
+    S->>S: Context switch to next process
+    M->>M: Load page from disk
+    M-->>P: Page loaded
+    P->>S: Unblock (READY)

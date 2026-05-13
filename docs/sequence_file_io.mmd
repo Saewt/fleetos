@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant P as Process
+    participant F as Filesystem
+    participant S as Scheduler
+    P->>F: File I/O request
+    F-->>P: I/O will take N ticks
+    P->>S: Block (IO_BLOCK)
+    S->>S: Context switch to next process
+    Note over F: N ticks later...
+    F-->>P: I/O complete
+    P->>S: Unblock (READY)

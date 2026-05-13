@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra
-SRC = src/main.c
+CFLAGS = -Wall -Wextra -g
+SRC = $(wildcard src/*.c)
 TARGET = drone_fleet_os
 
 all: $(TARGET)
@@ -11,4 +11,7 @@ $(TARGET): $(SRC)
 clean:
 	rm -f $(TARGET) src/*.o
 
-.PHONY: all clean
+run: $(TARGET)
+	./$(TARGET)
+
+.PHONY: all clean run
