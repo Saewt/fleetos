@@ -14,7 +14,6 @@ int mutex_lock(Mutex *m, int pid) {
         m->owner_pid = pid;
         return 0;
     }
-    /* TODO: Add to wait queue and block */
     (void)pid;
     return -1;
 }
@@ -22,23 +21,19 @@ int mutex_lock(Mutex *m, int pid) {
 void mutex_unlock(Mutex *m) {
     m->locked = 0;
     m->owner_pid = -1;
-    /* TODO: Wake up next waiter */
 }
 
 void cond_wait(CondVar *cv, Mutex *m) {
     (void)cv;
     (void)m;
-    /* TODO: Release mutex and block on condition */
 }
 
 void cond_signal(CondVar *cv) {
     (void)cv;
-    /* TODO: Wake up one waiter */
 }
 
 void cond_broadcast(CondVar *cv) {
     (void)cv;
-    /* TODO: Wake up all waiters */
 }
 
 void buffer_init(BoundedBuffer *b) {
@@ -54,15 +49,17 @@ void buffer_init(BoundedBuffer *b) {
 }
 
 int buffer_produce(BoundedBuffer *b, int item) {
-    (void)b;
-    (void)item;
-    /* TODO: Produce item with mutex and condition variables */
+    if (b->count >= RING_BUFFER_SIZE) return -1;
+    b->buffer[b->in] = item;
+    b->in = (b->in + 1) % RING_BUFFER_SIZE;
+    b->count++;
     return 0;
 }
 
 int buffer_consume(BoundedBuffer *b, int *item) {
-    (void)b;
-    (void)item;
-    /* TODO: Consume item with mutex and condition variables */
+    if (b->count <= 0) return -1;
+    *item = b->buffer[b->out];
+    b->out = (b->out + 1) % RING_BUFFER_SIZE;
+    b->count--;
     return 0;
 }

@@ -19,6 +19,6 @@ TCB* thread_create(int tid, int owner_pid);
 void thread_yield(TCB *tcb);
 void thread_block(TCB *tcb, BlockReason reason);
 void thread_unblock(TCB *tcb);
-const char* thread_to_json(TCB *tcb);
+void thread_to_json(TCB *tcb, char *buf, size_t bufsize);
 
 #endif
