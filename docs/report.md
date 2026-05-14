@@ -49,34 +49,47 @@ graph TD
     Logger --> Dashboard[Web Dashboard - Python Flask]
 ```
 
-**Component map:**
+**Component map — vertical layer view:**
 
-```
-CLI (main.c)
-  |
-Kernel (kernel.c)  <-- tick loop, event dispatch, snapshot
-  |
-  +-- Scheduler (scheduler.c)     RR + MLFQ, TCB-based queues
-  +-- Memory    (memory.c)        Paging + LRU eviction
-  +-- Sync      (sync.c)          Mutex + CondVar + BoundedBuffer
-  +-- Filesystem (filesystem.c)   FAT table, create/read/write/delete
-  +-- Deadlock  (deadlock.c)      Resource graph, DFS detection, victim
-  +-- Thread    (thread.c)        TCB abstraction, per-process threads
-  +-- PCB       (pcb.c)           Process control block, JSON serialization
-  +-- Drone     (drone.c)         Drone type definitions, commands
-  |
-Logger (logger.c) --> stdout JSON
-  |
-Web Dashboard (Python Flask) <-- reads JSON from simulator stdout
+```mermaid
+flowchart TB
+    subgraph "User Interface"
+        CLI["CLI (main.c)"]
+        Dashboard["Web Dashboard (Python Flask)"]
+    end
+    subgraph "Kernel Core"
+        Kernel["Kernel (kernel.c)<br/>tick loop, event dispatch, snapshot"]
+    end
+    subgraph "Subsystems"
+        Scheduler["Scheduler (scheduler.c)<br/>RR + MLFQ, TCB queues"]
+        Memory["Memory (memory.c)<br/>Paging + LRU eviction"]
+        Sync["Sync (sync.c)<br/>Mutex + CondVar + BoundedBuffer"]
+        FS["Filesystem (filesystem.c)<br/>FAT table, create/read/write/delete"]
+        Deadlock["Deadlock (deadlock.c)<br/>Resource graph, DFS detection, victim"]
+        Thread["Thread (thread.c)<br/>TCB, per-process threads"]
+        PCB["PCB (pcb.c)<br/>Process control block, JSON serialization"]
+        Drone["Drone (drone.c)<br/>Drone type definitions, commands"]
+    end
+    subgraph "Observability"
+        Logger["Logger (logger.c)<br/>stdout JSON"]
+    end
+
+    CLI --> Kernel
+    Kernel --> Scheduler
+    Kernel --> Memory
+    Kernel --> Sync
+    Kernel --> FS
+    Kernel --> Deadlock
+    Kernel --> Thread
+    Kernel --> PCB
+    Kernel --> Drone
+    Kernel --> Logger
+    Logger --> Dashboard
 ```
 
 The data flow is strictly pipeline: **C simulator → JSON stdout → Python server parses JSON lines → WebSocket push → HTML/JS dashboard renders**.
 
-Sequence diagrams for key interactions are available in:
-- `docs/sequence_file_io.mmd` — IO_WRITE → block → scheduler switch
-- `docs/sequence_page_fault.mmd` — Page fault → block → scheduler switch
-- `docs/buffer_produce_consume.mmd` — Mutex/CondVar → producer-consumer
-- `docs/deadlock_detect.mmd` — Resource graph → DFS cycle → victim resolution
+Sequence diagrams for key interactions are available inline below in sections 4.1–4.4 (each interaction includes the full rendered Mermaid diagram).
 
 ---
 
@@ -135,7 +148,42 @@ For each major subsystem we document what was chosen, at least one alternative c
 
 **Buffer configuration**: `RING_BUFFER_SIZE = 8`, `MAX_WAKE_PIDS = 4`.
 
-**Sequence diagram:** See `docs/buffer_produce_consume.mmd`.
+```mermaid
+sequenceDiagram
+    participant Flight as Flight (T0)
+    participant Buffer as BoundedBuffer
+    participant CondVar as not_full / not_empty
+    participant Mapping as Mapping (T4)
+    participant Sched as Scheduler
+
+    Flight->>Buffer: buffer_produce(item=100)
+    Buffer->>Buffer: mutex_lock()
+    Note over Flight,Buffer: mutex acquired (owner=0)
+    Flight->>Buffer: insert item at in=0
+    Buffer->>Buffer: count=1
+    Flight->>CondVar: cond_signal(not_empty)
+    Note over CondVar: wake tid=4 (Mapping)
+    Flight->>Buffer: mutex_unlock()
+    Note over Buffer: mutex released, wake_pid=-1
+    Flight->>Sched: thread_execute() → continue
+
+    Mapping->>Buffer: buffer_consume(item)
+    Buffer->>Buffer: mutex_lock() → acquired
+    Note over Mapping,Buffer: mutex acquired (owner=2)
+    Mapping->>Buffer: remove item at out=0
+    Buffer->>Buffer: count=0
+    Mapping->>CondVar: cond_signal(not_full)
+    Note over CondVar: wake any blocked producer
+    Mapping->>Buffer: mutex_unlock()
+    Note over Buffer: mutex released
+
+    Note over Flight,Mapping: Full buffer → producer blocked on MUTEX_WAIT
+    Flight->>Buffer: buffer_produce() → full
+    Buffer->>Buffer: mutex_lock() → acquired
+    Flight->>CondVar: cond_wait(not_full) → release mutex
+    Note over Flight: blocked (MUTEX_WAIT)
+    Sched->>Sched: context switch to next ready
+```
 
 
 ### 3.4 Thread Abstraction
@@ -255,7 +303,29 @@ The project requires at least two meaningful interactions, one involving schedul
 
 ### 4.1 IO_WRITE → Block Thread → Scheduler Switch (Filesystem + Scheduler)
 
-**Sequence diagram:** `docs/sequence_file_io.mmd`
+```mermaid
+sequenceDiagram
+    participant Drone as Drone (process)
+    participant Kernel as Kernel
+    participant FS as Filesystem
+    participant Sched as Scheduler
+    participant Event as PendingEvents
+
+    Drone->>Kernel: CMD_IO_WRITE
+    Kernel->>FS: fs_create("/logs/drone_PID_seq_N.log")
+    Kernel->>Drone: PC++, burst_remaining--
+    Kernel->>Drone: block_thread(IO_BLOCK)
+    Drone->>Sched: state → T_BLOCKED, removed from ready queue
+    Sched->>Sched: scheduler_next() → pick next ready thread
+    Kernel->>Event: add pending_event(pid, tick+3, IO_BLOCK)
+    Note over Drone,Sched: 3 ticks pass (other threads execute)
+
+    Kernel->>Event: complete_io_events() at tick+3
+    Event->>FS: fs_write(path, sensor_data)
+    FS-->>Kernel: written
+    Kernel->>Drone: unblock_thread()
+    Drone->>Sched: state → T_READY, added to ready queue
+```
 
 When a thread executes `CMD_IO_WRITE`:
 1. The kernel creates a log file path under `/logs/`
@@ -268,7 +338,37 @@ When a thread executes `CMD_IO_WRITE`:
 
 ### 4.2 Page Fault → Block Thread → Scheduler Switch (Memory + Scheduler)
 
-**Sequence diagram:** `docs/sequence_page_fault.mmd`
+```mermaid
+sequenceDiagram
+    participant Drone as Drone (thread)
+    participant Kernel as Kernel
+    participant Mem as Memory Manager
+    participant LRU as LRU Eviction
+    participant Sched as Scheduler
+    participant Event as PendingEvents
+
+    Kernel->>Drone: trigger_page_fault() every 8 ticks
+    Drone->>Mem: mem_access(virtual_addr, &fault_page)
+    Mem-->>Drone: page_table[page] == -1 → PAGE_FAULT
+    Kernel->>Drone: block_thread(PAGE_FAULT)
+    Drone->>Sched: state → T_BLOCKED, removed from ready queue
+    Sched->>Sched: scheduler_next() → pick next ready thread
+    Kernel->>Event: add pending_event(pid, tick+3, PAGE_FAULT)
+    Note over Drone,Sched: 3 ticks pass (other threads execute)
+
+    Kernel->>Event: complete_page_faults() at tick+3
+    Event->>Mem: mem_allocate_page(proc, page, &eviction)
+    alt free frames available
+        Mem->>Mem: assign frame, link to page table
+    else all frames full
+        Mem->>LRU: select_lru_victim() → oldest frame
+        LRU->>LRU: invalidate victim's page_table[old_page]
+        Mem->>Mem: reassign frame to new process
+    end
+    Mem-->>Kernel: page mapped
+    Kernel->>Drone: unblock_thread()
+    Drone->>Sched: state → T_READY, added to ready queue
+```
 
 Every 8 ticks (when deadlock mode is off), the kernel calls `trigger_page_fault()` on the currently running thread. If the thread's process has not yet mapped the next page:
 1. A page fault is logged with `MEM/WARN` level
@@ -281,7 +381,7 @@ Every 8 ticks (when deadlock mode is off), the kernel calls `trigger_page_fault(
 
 ### 4.3 Buffer Produce/Consume with Mutex Contention (Sync + Scheduler)
 
-**Sequence diagram:** `docs/buffer_produce_consume.mmd`
+*(See the full sequence diagram in section 3.3 above — the same buffer_produce/consume flow is used here.)*
 
 The bounded buffer (8 slots) is shared between Flight (producer) and Mapping/LogCollector (consumers):
 1. `buffer_produce`/`buffer_consume` attempts `mutex_lock`
@@ -299,7 +399,47 @@ The bounded buffer (8 slots) is shared between Flight (producer) and Mapping/Log
 
 ### 4.4 Deadlock Detection with Victim Termination (Deadlock + Scheduler + Memory + FS)
 
-**Sequence diagram:** `docs/deadlock_detect.mmd`
+```mermaid
+sequenceDiagram
+    participant Flight as Flight (pid=0, HIGH)
+    participant Battery as Battery (pid=1, CRITICAL)
+    participant DG as Deadlock Graph
+    participant Kernel as Kernel (tick detector)
+    participant Sched as Scheduler
+
+    Flight->>DG: deadlock_request(LANDING_PAD)
+    DG->>DG: available=1 → alloc → result=0
+    Note over Flight: "Resource acquired" → phase++
+
+    Battery->>DG: deadlock_request(CHARGE_STATION)
+    DG->>DG: available=1 → alloc → result=0
+    Note over Battery: "Resource acquired" → phase++
+
+    Flight->>DG: deadlock_request(CHARGE_STATION)
+    DG->>DG: available=0 → wait → result=-1
+    Note over Flight: blocked RESOURCE_WAIT
+    Sched->>Sched: context switch
+
+    Battery->>DG: deadlock_request(LANDING_PAD)
+    DG->>DG: available=0 → wait → result=-1
+    Note over Battery: blocked RESOURCE_WAIT
+    Sched->>Sched: context switch
+
+    Kernel->>DG: deadlock_detect() every 10 ticks
+    DG->>DG: DFS cycle: Flight→ChargeStation→Battery→LandingPad→Flight
+    DG->>DG: victim = lowest priority (HIGH=1 vs CRITICAL=0)
+    Note over DG: victim = Flight (pid=0)
+
+    Kernel->>Flight: deadlock_resolve(victim=0)
+    Flight->>DG: deadlock_cleanup_process(0)
+    DG->>DG: release LandingPad, release ChargeStation
+    Kernel->>Flight: cleanup_process() → TERMINATED
+
+    DG->>Battery: deadlock_wake_waiters → deadlock_alloc(LANDING_PAD)
+    DG->>Battery: wake_callback → unblock + phase++
+    Note over Battery: "Resource acquired" → unblocked
+    Sched->>Sched: Battery added to ready queue
+```
 
 When Flight holds LandingPad and requests ChargeStation, while Battery holds ChargeStation and requests LandingPad:
 1. `deadlock_request` blocks both threads on `RESOURCE_WAIT`
