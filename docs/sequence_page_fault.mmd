@@ -1,11 +1,29 @@
 sequenceDiagram
-    participant P as Process
-    participant M as Memory
-    participant S as Scheduler
-    P->>M: Access virtual address
-    M-->>P: Page fault!
-    P->>S: Block (PAGE_FAULT)
-    S->>S: Context switch to next process
-    M->>M: Load page from disk
-    M-->>P: Page loaded
-    P->>S: Unblock (READY)
+    participant Drone as Drone (thread)
+    participant Kernel as Kernel
+    participant Mem as Memory Manager
+    participant LRU as LRU Eviction
+    participant Sched as Scheduler
+    participant Event as PendingEvents
+
+    Kernel->>Drone: trigger_page_fault() every 8 ticks
+    Drone->>Mem: mem_access(virtual_addr, &fault_page)
+    Mem-->>Drone: page_table[page] == -1 → PAGE_FAULT
+    Kernel->>Drone: block_thread(PAGE_FAULT)
+    Drone->>Sched: state → T_BLOCKED, removed from ready queue
+    Sched->>Sched: scheduler_next() → pick next ready thread
+    Kernel->>Event: add pending_event(pid, tick+3, PAGE_FAULT)
+    Note over Drone,Sched: 3 ticks pass (other threads execute)
+
+    Kernel->>Event: complete_page_faults() at tick+3
+    Event->>Mem: mem_allocate_page(proc, page, &eviction)
+    alt free frames available
+        Mem->>Mem: assign frame, link to page table
+    else all frames full
+        Mem->>LRU: select_lru_victim() → oldest frame
+        LRU->>LRU: invalidate victim's page_table[old_page]
+        Mem->>Mem: reassign frame to new process
+    end
+    Mem-->>Kernel: page mapped
+    Kernel->>Drone: unblock_thread()
+    Drone->>Sched: state → T_READY, added to ready queue

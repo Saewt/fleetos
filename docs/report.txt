@@ -1,0 +1,444 @@
+================================================================================
+  FleetOS — Operating System Simulation Engineering Report
+================================================================================
+
+  Course    : Operating Systems
+  Language  : C (C99)
+  Theme     : Drone Fleet Controller
+  Repository: https://github.com/Saewt/fleetos (branch: dev)
+
+
+1. System Overview & Theme
+===============================================================================
+
+FleetOS is a modular operating system simulator designed around a drone fleet
+management environment. The system models how a centralized operating system
+kernel coordinates multiple autonomous drone processes competing for CPU time,
+memory, synchronization primitives, storage, and shared runtime resources.
+
+Unlike purely theoretical operating system demonstrations, FleetOS integrates
+multiple subsystems into a unified execution pipeline where process scheduling,
+paging, blocking, deadlock detection, and filesystem operations interact
+continuously during runtime.
+
+Four drone processes run concurrently, each with a distinct priority and
+mission profile:
+
+    PID  NAME             PRIORITY   ARRIVAL  COMMANDS
+    ------------------------------------------------------------
+    0    Flight           HIGH       0        COMPUTE, PRODUCE, ACQUIRE
+    1    Battery          CRITICAL   0        COMPUTE, ACQUIRE, IO_WRITE
+    2    Mapping          NORMAL     2        COMPUTE, CONSUME, IO_WRITE
+    3    LogCollector     LOW        4        CONSUME, IO_WRITE
+
+Each process spawns two threads (main + worker), scheduled independently by
+the kernel. The system is tick-driven (1 tick = one scheduling cycle). Every
+tick the kernel dispatches the current thread, executes its next command,
+processes pending I/O and page fault completions, checks for deadlocks, and
+emits a structured JSON event log. This log feeds a Python Flask dashboard
+for real-time visualization.
+
+The system is built entirely in C with no external dependencies beyond the
+standard library. The codebase is approximately 2 800 lines across 22 source
+files in src/.
+
+
+2. Architecture Diagram
+===============================================================================
+
+The architecture is described in docs/architecture.mmd (Mermaid diagram):
+
+    CLI (main.c)
+      |
+    Kernel (kernel.c)  <-- tick loop, event dispatch, snapshot
+      |
+      +-- Scheduler (scheduler.c)     RR + MLFQ, TCB-based queues
+      +-- Memory    (memory.c)        Paging + LRU eviction
+      +-- Sync      (sync.c)          Mutex + CondVar + BoundedBuffer
+      +-- Filesystem (filesystem.c)   FAT table, create/read/write/delete
+      +-- Deadlock  (deadlock.c)      Resource graph, DFS detection, victim
+      +-- Thread    (thread.c)        TCB abstraction, per-process threads
+      +-- PCB       (pcb.c)           Process control block, JSON serialization
+      +-- Drone     (drone.c)         Drone type definitions, commands
+      |
+    Logger (logger.c) --> stdout JSON
+      |
+    Web Dashboard (Python Flask) <-- reads JSON from simulator stdout
+
+The data flow is strictly pipeline: C simulator -> JSON stdout -> Python
+server parses JSON lines -> WebSocket push -> HTML/JS dashboard renders.
+
+Sequence diagrams for key interactions are available in:
+  - docs/sequence_file_io.mmd     (IO_WRITE -> block -> scheduler switch)
+  - docs/sequence_page_fault.mmd  (Page fault -> block -> scheduler switch)
+
+
+3. Key Design Decisions & Alternatives
+===============================================================================
+
+For each major subsystem we document what was chosen, at least one alternative
+considered, why the alternative was rejected, and the accepted trade-off.
+
+
+3.1 Scheduler: RR + MLFQ Dual Implementation
+
+  Chosen   : Combined Round-Robin (RR) and Multi-Level Feedback Queue (MLFQ)
+             selected via --mode flag. A --compare flag runs both and outputs
+             comparison metrics (context switches, total/avg/max wait time,
+             avg/max turnaround time, terminated count). MLFQ uses three
+             queues: Q0 (CRITICAL/HIGH, quantum=2), Q1 (NORMAL, quantum=4),
+             Q2 (LOW, quantum=8). Every 30 real ticks, all threads from Q1/Q2
+             are boosted to Q0 to prevent starvation.
+
+  Considered: Priority-only scheduling (fixed priority, no preemption).
+
+  Why not  : Fixed priority causes starvation for low-priority drones
+             (e.g., LogCollector). MLFQ naturally demotes CPU-bound threads
+             and promotes I/O-bound threads via the periodic boost.
+
+  Trade-off: MLFQ requires tuning (quantum sizes, boost interval, number of
+             queues). We accept this complexity for starvation-free behaviour.
+             RR serves as the fair baseline for quantitative comparison.
+
+
+3.2 Memory Management: Paging with LRU Eviction
+
+  Chosen   : Fixed-size paging (256 B pages, 16 frames). LRU eviction selects
+             the least-recently-accessed frame when free frames are exhausted.
+             Page faults are triggered deterministically every 8 ticks on the
+             currently running thread (configurable; page fault duration = 3
+             ticks). In deadlock mode, page faults are disabled to prevent
+             timing interference with the deadlock scenario.
+
+  Considered: Segmentation (variable-size segments).
+
+  Why not  : Segmentation leads to external fragmentation and complicates
+             simulation. Paging is simpler and cleanly demonstrates address
+             translation and demand-paging fault handling.
+
+  Trade-off: Fixed 4 KB address space per process (16 pages x 256 B). A
+             process cannot grow beyond this. For small drone workloads this
+             is sufficient. LRU frame tracking adds O(frames) overhead per
+             access, but with only 16 frames this is negligible.
+
+
+3.3 Concurrency: Mutex + Condition Variables + Producer-Consumer
+
+  Chosen   : Mesa-style mutex and condition variable primitives in sync.c.
+             A bounded buffer (8 slots) implements the producer-consumer
+             classical concurrency problem. buffer_produce and buffer_consume
+             use the monitor pattern: lock mutex, check condition, cond_wait
+             if needed (releases mutex), signal when done, unlock. Mutex
+             lock failures (contention) block the calling thread with
+             MUTEX_WAIT; the scheduler then selects another thread.
+
+  Considered: Spinlocks (busy-wait in a loop without blocking).
+
+  Why not  : Spinlocks waste CPU cycles and do not demonstrate OS-level
+             blocking. Our approach shows realistic behaviour where a thread
+             waiting on a lock is descheduled.
+
+  Trade-off: Mesa semantics mean a woken thread must re-check the condition
+             and re-acquire the mutex. This adds extra cycles on every signal
+             but guarantees correctness without complex waiter-management.
+
+
+3.4 Thread Abstraction
+
+  Chosen   : Each process spawns exactly two threads: a main thread (carries
+             the process command stream) and a worker thread (executes a
+             simple CMD_COMPUTE loop). The scheduler operates on TCBs, not
+             PCBs. Threads share process resources (page table, priority,
+             held resources) but have independent program counters, command
+             streams, and burst counters. The PCB state is derived from its
+             threads via sync_pcb_state_from_threads(): any T_RUNNING thread
+             implies RUNNING; all live threads T_BLOCKED implies BLOCKED.
+
+  Considered: 1:1 (one thread per process, thread as thin PCB wrapper).
+
+  Why not  : A 1:1 mapping is indistinguishable from a threadless design.
+             proje.html explicitly requires a thread abstraction.
+
+  Trade-off: Two threads per process doubles context-switch overhead. For
+             only 4 processes (8 threads) this is manageable and clearly
+             demonstrates independent schedulable entities sharing process
+             resources.
+
+
+3.5 Filesystem: FAT-based Directory + File Operations
+
+  Chosen   : Contiguous FAT (File Allocation Table) with 64 blocks of 64 B
+             each. Three fixed directories (/missions/, /logs/, /config/)
+             are created at init. fs_create/read/write/delete are supported.
+             I/O writes block the issuing thread for 3 ticks (simulating
+             disk latency), during which the scheduler picks another thread.
+             On process termination, fs_cleanup_process() deletes all log
+             files owned by the crashed process.
+
+  Considered: In-memory flat file array (no directory structure).
+
+  Why not  : A flat array does not demonstrate hierarchical naming or
+             directory traversal. The FAT structure shows block allocation,
+             chaining, and free-block management.
+
+  Trade-off: The FAT is fully linked (no indexing). Reading a large file
+             requires O(n) block traversals. For the small log files drones
+             produce (max ~64 B), this is negligible. The in-memory design
+             loses all files on shutdown.
+
+
+3.6 Observability: Structured JSON Logging
+
+  Chosen   : Every event is emitted as a single-line JSON object to stdout.
+             Log modules: KERNEL, SCHED, MEM, FS, SYNC, DEADLOCK, THREAD,
+             FAULT. Every 5 ticks a compound SNAPSHOT event is emitted
+             containing full system state: processes (with state, priority,
+             blocked reason, completion tick), threads (full TCB list with
+             primary thread), memory (free frames, frame-to-PID map),
+             filesystem (file listing), bounded buffer (count, items, mutex
+             owner), and scheduler queues (ready queue TIDs, current quantum,
+             MLFQ queue contents per level, priority boost count).
+
+  Considered: Binary logging, printf with ad-hoc formatting.
+
+  Why not  : Binary logs require a decoder; ad-hoc printf cannot be parsed
+             by the dashboard. JSON is human-readable, machine-parseable, and
+             the dashboard consumes it directly via the stdin/stdout pipeline.
+
+  Trade-off: JSON is verbose (~200 B per event, ~4 KB per snapshot). For
+             simulations under 1 000 ticks this is well within stdout buffer
+             limits and worth the debuggability.
+
+
+4. Cross-Component Interactions
+===============================================================================
+
+The project requires at least two meaningful interactions, one involving
+scheduling and one involving memory or file I/O. FleetOS demonstrates four
+distinct interactions.
+
+
+4.1 IO_WRITE -> Block Thread -> Scheduler Switch
+    (Filesystem + Scheduler)
+
+  When a thread executes CMD_IO_WRITE:
+    (a) the kernel creates a log file path under /logs/
+    (b) the thread is blocked with reason IO_BLOCK for 3 ticks (simulating
+        disk write latency)
+    (c) the scheduler picks the next ready thread from the queue
+    (d) after 3 ticks, complete_io_events() writes sensor data to the file
+        and unblocks the thread, returning it to the ready queue
+
+  This demonstrates: I/O wait, blocking system call, scheduler context switch.
+
+
+4.2 Page Fault -> Block Thread -> Scheduler Switch
+    (Memory + Scheduler)
+
+  Every 8 ticks (when deadlock mode is off), the kernel calls
+  trigger_page_fault() on the currently running thread. If the thread's
+  process has not yet mapped the next page:
+    (a) a page fault is logged with MEM/WARN level
+    (b) the thread is blocked for PAGE_FAULT_DURATION (3 ticks)
+    (c) the scheduler picks another thread
+    (d) after 3 ticks, mem_allocate_page() maps the page, possibly evicting
+        the LRU frame; the LRU victim's page table entry is invalidated
+
+  This demonstrates: demand paging, page fault handling, LRU eviction,
+  memory-subsystem interaction with scheduling.
+
+
+4.3 Buffer Produce/Consume with Mutex Contention
+    (Sync + Scheduler)
+
+  The bounded buffer (8 slots) is shared between Flight (producer) and
+  Mapping/LogCollector (consumers):
+    (a) buffer_produce/consume attempts mutex_lock
+    (b) if the mutex is held by another thread, the caller blocks on
+        MUTEX_WAIT and is descheduled
+    (c) when the holder calls mutex_unlock, the next mutex waiter is woken
+        and added to the ready queue
+    (d) cond_signal on not_full/not_empty condition variables wakes threads
+        waiting on buffer state (buffer full producer, or buffer empty
+        consumer)
+
+  This demonstrates: mutex contention, condition variable signalling, and
+  scheduler-driven wake-up.
+
+
+4.4 Deadlock Detection with Victim Termination
+    (Deadlock + Scheduler + Memory + FS)
+
+  When Flight holds LandingPad and requests ChargeStation, while Battery
+  holds ChargeStation and requests LandingPad:
+    (a) deadlock_request blocks both threads on RESOURCE_WAIT
+    (b) every 10 ticks, deadlock_detect() runs DFS on the resource graph
+    (c) if a cycle is found, the lowest-priority victim is selected (high
+        Priority enum value = low importance, ties broken by highest PID)
+    (d) deadlock_resolve terminates the victim via cleanup_process()
+    (e) cleanup_process releases deadlock resources, wakes waiters, releases
+        mutex locks, deletes owned files, and frees memory frames
+    (f) the survivor acquires the released resource and continues execution
+
+  This demonstrates: resource allocation graph, cycle detection, priority-
+  based victim selection, and coordinated cleanup across all subsystems.
+
+
+5. Engineering Challenge & Failure Scenario
+===============================================================================
+
+
+5.1 Engineering Challenge: Deadlock Detection
+
+  Problem    : Two drone processes request resources in opposite order.
+               Flight acquires LandingPad then requests ChargeStation.
+               Battery acquires ChargeStation then requests LandingPad.
+               This creates a circular wait condition.
+
+  Detection  : The deadlock module maintains a ResourceGraph with three
+               matrices: allocation[pid][rid] (held resources), request[pid][rid]
+               (requested resources), available[rid] (free units). Three
+               resources exist each with available=1: RESOURCE_LANDING_PAD(0),
+               RESOURCE_CHARGE_STATION(1), RESOURCE_COMM_CHANNEL(2).
+               DFS cycle detection iterates every process with an outgoing
+               request. For each process in a detected cycle, priority and
+               PID are evaluated for victim selection.
+
+  Victim     : The lowest-priority process is selected (highest Priority enum
+               value: CRITICAL=0, HIGH=1, NORMAL=2, LOW=3). Ties are broken
+               by highest PID. This ensures CRITICAL drones (Battery) survive
+               over HIGH drones (Flight). The victim is terminated via
+               cleanup_process(), which releases all resources via
+               deadlock_cleanup_process(), calls deadlock_wake_waiters() to
+               hand resources to the next waiter, and invokes the wake
+               callback to unblock the survivor.
+
+  Limitations: Single-unit resources only (available[N]=1). Multi-unit
+               resources would require Banker's algorithm or a more complex
+               allocation check. The victim is terminated, not rolled back.
+               True deadlock recovery would require checkpoint/restart.
+
+
+5.2 Failure Scenario: Crash Injection
+
+  What fails : At tick 30 (if --crash is enabled), the currently running
+               process is forcibly terminated with a "Crash injected" event.
+
+  Why it fails: The crash simulates a hardware fault or software bug (e.g.,
+               memory corruption, sensor disconnect, motor controller crash).
+
+  How the OS reacts:
+    (a) cleanup_process() is called with release_resources=1
+    (b) buffer_remove_pid removes the process from all CondVar wait queues,
+        preventing stuck waiters
+    (c) buffer_release_mutex releases any mutex the process held, allowing
+        other threads to proceed
+    (d) deadlock_cleanup_process releases all held resources; then
+        deadlock_wake_waiters unblocks any threads waiting on those resources
+    (e) fs_cleanup_process deletes all /logs/drone_PID_* files owned by the
+        crashed process, preventing orphaned log entries
+    (f) mem_free_process releases all page frames for reuse
+    (g) All threads of the process are marked T_DONE, preventing further
+        scheduling
+
+  Is the behaviour acceptable?
+               The crash is handled gracefully: no orphaned resources, no
+               stuck wait queues, no memory leak. Remaining processes continue
+               unaffected. The event is logged under the FAULT module at
+               CRITICAL level for observability. The limitation is that we
+               cannot restart the crashed process — a real OS might implement
+               process resurrection or hot-spare failover.
+
+The most difficult engineering challenge throughout the project was maintaining
+consistent process states across multiple subsystems. Thread state is managed
+by the scheduler (ready queues), PCB module (process table), synchronization
+subsystem (wait queues), pending event queue (I/O and page fault completions),
+and deadlock module (resource graph). Early versions allowed direct queue
+mutations across subsystems, causing inconsistent runtime behaviour where a
+thread could appear RUNNING in the scheduler while BLOCKED in the PCB, or a
+process could hold a resource while being marked as terminated.
+
+The issue was solved by:
+  - Centralizing queue ownership in the scheduler (the scheduler is the sole
+    authority on which thread runs next)
+  - Deriving PCB state from thread states (sync_pcb_state_from_threads()
+    aggregates thread states every snapshot tick and after every block/unblock
+    operation, so PCB state is always a derived property)
+  - Using pending deferred events for I/O and page fault completions instead
+    of inline blocking (the pending event queue decouples completion logic
+    from the scheduling decision)
+  - Restricting direct subsystem mutations (e.g., deadlock_release triggers
+    wake_waiters rather than directly modifying the scheduler queue)
+
+This significantly improved runtime stability and made the system reliable
+enough for 10/10 repetitions of --compare --ticks 100 under AddressSanitizer.
+
+
+6. Limitations & Future Improvements
+===============================================================================
+
+
+6.1 Current Limitations
+
+  - Single-CPU simulation: Only one thread runs per tick. No preemptive
+    multi-core. A dual-core simulation would require per-core ready queues
+    and load balancing.
+
+  - Fixed resource counts: MAX_PROCS=16, FRAME_COUNT=16, BLOCK_COUNT=64.
+    The system cannot dynamically grow. If all frames are exhausted, page
+    allocation fails.
+
+  - Single-unit resources: Each of the 3 resources has available=1. No
+    multi-unit resource allocation.
+
+  - No priority inheritance: A HIGH-priority thread blocked on a mutex held
+    by a LOW-priority thread does not donate its priority. This can cause
+    priority inversion in theory, though the small number of threads makes
+    this unlikely in practice.
+
+  - Filesystem is in-memory: All files are lost on shutdown. No persistent
+    storage.
+
+  - Dashboard is separate: The Python dashboard reads JSON from stdout.
+    No direct IPC. The --interactive flag provides step-by-step control via
+    stdin (commands: step, run N, pause, status, quit).
+
+  - No hardware interrupt simulation: No timer interrupts, no external event
+    preemption. The tick is driven by the simulation loop rather than a
+    hardware clock.
+
+
+6.2 Future Improvements
+
+  - SMP simulation: Implement per-CPU ready queues, spinlocks for internal
+    kernel data structures, and load-balancing between virtual CPUs.
+
+  - Priority inheritance / priority ceiling protocol: Prevent priority
+    inversion when a high-priority thread waits on a mutex held by a
+    low-priority thread. This would satisfy a second engineering challenge.
+
+  - Dynamic resource pools: Allow processes to request/release more memory
+    frames at runtime. Implement an OOM (out-of-memory) killer as a failure
+    scenario.
+
+  - Multi-unit deadlock: Extend the ResourceGraph with available/max matrices
+    and implement Banker's algorithm for deadlock avoidance alongside the
+    existing detection.
+
+  - Process resurrection: When a crash is detected, respawn the process with
+    a fresh PCB and initialized state, simulating a watchdog timer.
+
+  - Persistent filesystem: Write the FAT to a binary file on shutdown and
+    reload it on startup, making logs persistent across simulation runs.
+
+  - Real-time dashboard: Use WebSocket (via the existing Flask server) to
+    send commands to the simulator's stdin and receive streaming JSON events
+    in real time, enabling pause/resume/step controls from the browser.
+
+  - Gantt-chart visualization: Render scheduling timelines from the context
+    switch event log to visualize CPU utilization and thread lifecycles.
+
+
+==============================================================================
+End of Report
+==============================================================================

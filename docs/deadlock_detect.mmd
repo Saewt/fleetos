@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant Flight as Flight (pid=0, HIGH)
+    participant Battery as Battery (pid=1, CRITICAL)
+    participant DG as Deadlock Graph
+    participant Kernel as Kernel (tick detector)
+    participant Sched as Scheduler
+
+    Flight->>DG: deadlock_request(LANDING_PAD)
+    DG->>DG: available=1 → alloc → result=0
+    Note over Flight: "Resource acquired" → phase++
+
+    Battery->>DG: deadlock_request(CHARGE_STATION)
+    DG->>DG: available=1 → alloc → result=0
+    Note over Battery: "Resource acquired" → phase++
+
+    Flight->>DG: deadlock_request(CHARGE_STATION)
+    DG->>DG: available=0 → wait → result=-1
+    Note over Flight: blocked RESOURCE_WAIT
+    Sched->>Sched: context switch
+
+    Battery->>DG: deadlock_request(LANDING_PAD)
+    DG->>DG: available=0 → wait → result=-1
+    Note over Battery: blocked RESOURCE_WAIT
+    Sched->>Sched: context switch
+
+    Kernel->>DG: deadlock_detect() every 10 ticks
+    DG->>DG: DFS cycle: Flight→ChargeStation→Battery→LandingPad→Flight
+    DG->>DG: victim = lowest priority (HIGH=1 vs CRITICAL=0)
+    Note over DG: victim = Flight (pid=0)
+
+    Kernel->>Flight: deadlock_resolve(victim=0)
+    Flight->>DG: deadlock_cleanup_process(0)
+    DG->>DG: release LandingPad, release ChargeStation
+    Kernel->>Flight: cleanup_process() → TERMINATED
+
+    DG->>Battery: deadlock_wake_waiters → deadlock_alloc(LANDING_PAD)
+    DG->>Battery: wake_callback → unblock + phase++
+    Note over Battery: "Resource acquired" → unblocked
+    Sched->>Sched: Battery added to ready queue

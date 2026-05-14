@@ -1,0 +1,34 @@
+sequenceDiagram
+    participant Flight as Flight (T0)
+    participant Buffer as BoundedBuffer
+    participant CondVar as not_full / not_empty
+    participant Mapping as Mapping (T4)
+    participant Sched as Scheduler
+
+    Flight->>Buffer: buffer_produce(item=100)
+    Buffer->>Buffer: mutex_lock()
+    Note over Flight,Buffer: mutex acquired (owner=0)
+    Flight->>Buffer: insert item at in=0
+    Buffer->>Buffer: count=1
+    Flight->>CondVar: cond_signal(not_empty)
+    Note over CondVar: wake tid=4 (Mapping)
+    Flight->>Buffer: mutex_unlock()
+    Note over Buffer: mutex released, wake_pid=-1
+    Flight->>Sched: thread_execute() → continue
+
+    Mapping->>Buffer: buffer_consume(item)
+    Buffer->>Buffer: mutex_lock() → acquired
+    Note over Mapping,Buffer: mutex acquired (owner=2)
+    Mapping->>Buffer: remove item at out=0
+    Buffer->>Buffer: count=0
+    Mapping->>CondVar: cond_signal(not_full)
+    Note over CondVar: wake any blocked producer
+    Mapping->>Buffer: mutex_unlock()
+    Note over Buffer: mutex released
+
+    Note over Flight,Mapping: Full buffer → producer blocked on MUTEX_WAIT
+    Flight->>Buffer: buffer_produce() → full
+    Buffer->>Buffer: mutex_lock() → acquired
+    Flight->>CondVar: cond_wait(not_full) → release mutex
+    Note over Flight: blocked (MUTEX_WAIT)
+    Sched->>Sched: context switch to next ready

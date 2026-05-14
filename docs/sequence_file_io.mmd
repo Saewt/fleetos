@@ -1,11 +1,21 @@
 sequenceDiagram
-    participant P as Process
-    participant F as Filesystem
-    participant S as Scheduler
-    P->>F: File I/O request
-    F-->>P: I/O will take N ticks
-    P->>S: Block (IO_BLOCK)
-    S->>S: Context switch to next process
-    Note over F: N ticks later...
-    F-->>P: I/O complete
-    P->>S: Unblock (READY)
+    participant Drone as Drone (process)
+    participant Kernel as Kernel
+    participant FS as Filesystem
+    participant Sched as Scheduler
+    participant Event as PendingEvents
+
+    Drone->>Kernel: CMD_IO_WRITE
+    Kernel->>FS: fs_create("/logs/drone_PID_seq_N.log")
+    Kernel->>Drone: PC++, burst_remaining--
+    Kernel->>Drone: block_thread(IO_BLOCK)
+    Drone->>Sched: state → T_BLOCKED, removed from ready queue
+    Sched->>Sched: scheduler_next() → pick next ready thread
+    Kernel->>Event: add pending_event(pid, tick+3, IO_BLOCK)
+    Note over Drone,Sched: 3 ticks pass (other threads execute)
+
+    Kernel->>Event: complete_io_events() at tick+3
+    Event->>FS: fs_write(path, sensor_data)
+    FS-->>Kernel: written
+    Kernel->>Drone: unblock_thread()
+    Drone->>Sched: state → T_READY, added to ready queue
