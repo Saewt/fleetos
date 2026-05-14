@@ -38,7 +38,15 @@ static int select_lru_victim(void) {
 
 int mem_allocate_page(PCB *pcb, int page, EvictionInfo *eviction) {
     if (!pcb || page < 0 || page >= MAX_PAGES) return -1;
-    if (pcb->page_table[page] != -1) return pcb->page_table[page];
+    if (pcb->page_table[page] != -1) {
+        if (eviction) {
+            eviction->evicted = 0;
+            eviction->victim_pid = -1;
+            eviction->victim_page = -1;
+            eviction->frame = -1;
+        }
+        return pcb->page_table[page];
+    }
 
     if (eviction) {
         eviction->evicted = 0;

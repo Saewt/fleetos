@@ -22,6 +22,11 @@ void deadlock_set_tick(int tick) {
     deadlock_tick = tick;
 }
 
+void deadlock_set_priority(int pid, Priority p) {
+    if (pid < 0 || pid >= MAX_PROCS) return;
+    graph.priority[pid] = p;
+}
+
 void deadlock_set_victim_callback(DeadlockVictimCallback cb) {
     victim_cb = cb;
 }
@@ -51,6 +56,8 @@ int deadlock_alloc(int pid, int rid) {
 int deadlock_request(int pid, int rid) {
     if (pid < 0 || pid >= MAX_PROCS) return -1;
     if (rid < 0 || rid >= NUM_RESOURCES) return -1;
+
+    if (graph.allocation[pid][rid] > 0) return 1;
 
     graph.request[pid][rid] = 1;
     graph.active[pid] = 1;
@@ -140,7 +147,9 @@ int deadlock_detect(int *victim_pid) {
         if (dfs_cycle(pid, visited, in_stack, &counter, &progress)) {
             for (int i = 0; i < MAX_PROCS; i++) {
                 if (in_stack[i] && is_active(i)) {
-                    if (out_victim < 0 || i > out_victim) {
+                    if (out_victim < 0 ||
+                        graph.priority[i] > graph.priority[out_victim] ||
+                        (graph.priority[i] == graph.priority[out_victim] && i > out_victim)) {
                         out_victim = i;
                     }
                 }
@@ -187,6 +196,10 @@ void deadlock_wake_waiters(int rid, int tick) {
     for (int i = 0; i < graph.wait_count[rid]; i++) {
         int wpid = graph.wait_pid[rid][i];
         if (wpid < 0) continue;
+        if (!is_active(wpid)) {
+            graph.wait_pid[rid][i] = -1;
+            continue;
+        }
 
         if (graph.available[rid] > 0) {
             deadlock_alloc(wpid, rid);

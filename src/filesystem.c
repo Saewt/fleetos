@@ -145,6 +145,33 @@ int fs_get_file_count(void) {
     return fs.file_count;
 }
 
+int fs_list(const char *prefix, char *buf, size_t bufsize) {
+    int pos = 0;
+    pos += snprintf(buf + pos, bufsize - pos, "[");
+    int added = 0;
+    size_t plen = prefix ? strlen(prefix) : 0;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!fs.files[i].used) continue;
+        if (plen > 0 && strncmp(fs.files[i].path, prefix, plen) != 0) continue;
+        if (added > 0) pos += snprintf(buf + pos, bufsize - pos, ",");
+        pos += snprintf(buf + pos, bufsize - pos,
+            "{\"path\":\"%s\",\"size\":%d}", fs.files[i].path, fs.files[i].size);
+        added++;
+    }
+    pos += snprintf(buf + pos, bufsize - pos, "]");
+    return added;
+}
+
+void fs_cleanup_process(int pid) {
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "/logs/drone_%d_", pid);
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (fs.files[i].used && strncmp(fs.files[i].path, prefix, strlen(prefix)) == 0) {
+            fs_delete(fs.files[i].path);
+        }
+    }
+}
+
 void fs_to_json(char *buf, size_t bufsize) {
     int pos = 0;
     pos += snprintf(buf + pos, bufsize - pos, "\"file_count\":%d,\"files\":[", fs.file_count);

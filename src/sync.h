@@ -25,12 +25,16 @@ typedef struct {
 
 void mutex_init(Mutex *m);
 int mutex_lock(Mutex *m, int pid);
-void mutex_unlock(Mutex *m);
-void cond_wait(CondVar *cv, Mutex *m);
-void cond_signal(CondVar *cv);
-void cond_broadcast(CondVar *cv);
+int mutex_unlock(Mutex *m);
+void cond_wait(CondVar *cv, Mutex *m, int pid);
+int cond_signal(CondVar *cv);
+int cond_broadcast(CondVar *cv, int *pids, int max_count);
+void sync_set_tick(int tick);
 void buffer_init(BoundedBuffer *b);
-int buffer_produce(BoundedBuffer *b, int item);
-int buffer_consume(BoundedBuffer *b, int *item);
+int buffer_produce(BoundedBuffer *b, int item, int pid, int wake_pids[], int *wake_count);
+int buffer_consume(BoundedBuffer *b, int *item, int pid, int wake_pids[], int *wake_count);
+void buffer_remove_pid(BoundedBuffer *b, int pid);
+void buffer_release_mutex(BoundedBuffer *b, int pid);
+void buffer_to_json(BoundedBuffer *b, char *buf, size_t bufsize);
 
 #endif

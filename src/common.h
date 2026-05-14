@@ -22,6 +22,7 @@
 #define BUFFER_SIZE 8
 #define PAGE_FAULT_INTERVAL 8
 #define RING_BUFFER_SIZE 8
+#define MAX_WAKE_PIDS 4
 
 typedef enum {
     NEW, READY, RUNNING, BLOCKED, TERMINATED, SUSPENDED
@@ -32,7 +33,7 @@ typedef enum {
 } Priority;
 
 typedef enum {
-    NONE, IO_BLOCK, PAGE_FAULT, MUTEX_WAIT, RESOURCE_WAIT
+    NONE, IO_BLOCK, PAGE_FAULT, MUTEX_WAIT, RESOURCE_WAIT, COND_WAIT
 } BlockReason;
 
 typedef enum {
@@ -58,6 +59,7 @@ typedef struct {
     int deadlock_enabled;
     int crash_enabled;
     int compare_enabled;
+    int interactive;
 } KernelConfig;
 
 const char* state_to_string(ProcessState s);
