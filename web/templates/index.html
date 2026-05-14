@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,9 +8,157 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
-    <h1>FleetOS Drone Fleet Dashboard</h1>
-    <div id="status">Connecting...</div>
-    <div id="logs"></div>
+    <!-- TOOLBAR -->
+    <div id="toolbar">
+        <h1>FLEET OS</h1>
+        <div class="toolbar-group">
+            <label for="mode-select">Mode</label>
+            <select id="mode-select">
+                <option value="rr">RR</option>
+                <option value="mlfq">MLFQ</option>
+            </select>
+        </div>
+        <div class="toolbar-group">
+            <label for="ticks-input">Ticks</label>
+            <input id="ticks-input" type="number" value="200" min="10" max="2000" step="10">
+        </div>
+        <div class="toolbar-group">
+            <label>Scenario</label>
+            <button id="btn-normal" class="active" type="button" aria-pressed="true" data-scenario="normal">Normal</button>
+            <button id="btn-deadlock" type="button" aria-pressed="false" data-scenario="deadlock">Deadlock</button>
+            <button id="btn-crash" type="button" aria-pressed="false" data-scenario="crash">Crash</button>
+        </div>
+        <div class="toolbar-group">
+            <button id="btn-start" type="button">&#9654; Start</button>
+            <button id="btn-pause" class="active" type="button">&#9654; Resume</button>
+            <button id="btn-step" type="button">&#9193; Step</button>
+            <button id="btn-stop" class="danger" type="button">&#9632; Stop</button>
+        </div>
+        <div class="toolbar-group">
+            <label for="speed-slider">Speed</label>
+            <input id="speed-slider" type="range" min="0.05" max="1.5" step="0.05" value="1.2">
+            <span id="speed-label">1.20s</span>
+        </div>
+        <div class="toolbar-group">
+            <button id="btn-compare" type="button">&#9878; Compare</button>
+            <button id="btn-help" type="button">Help</button>
+        </div>
+        <div class="toolbar-group">
+            <label>Tick</label>
+            <span id="tick-display">0</span>
+        </div>
+    </div>
+
+    <div id="concept-strip" aria-label="Observed operating system concepts">
+        <span class="concept-chip" data-concept="scheduling">Scheduling</span>
+        <span class="concept-chip" data-concept="memory">Page Fault</span>
+        <span class="concept-chip" data-concept="io">File I/O</span>
+        <span class="concept-chip" data-concept="sync">Sync</span>
+        <span class="concept-chip" data-concept="failure">Deadlock / Crash</span>
+        <span id="last-event">Start simulation to observe scheduling, memory, I/O, sync and failure handling.</span>
+    </div>
+
+    <aside id="presentation-note" class="note-idle" aria-live="polite" aria-label="Sunum notu">
+        <div class="note-kicker">Şu an ne oldu?</div>
+        <div id="presentation-note-text">Start sonrası Step ile ilerleyin; önemli OS olayları burada Türkçe açıklanacak.</div>
+        <div id="presentation-note-meta">Hazır · Sunum modu</div>
+    </aside>
+
+    <!-- MAIN LAYOUT -->
+    <div id="main">
+        <!-- GRID AREA -->
+        <div id="grid-area">
+            <div id="drone-grid"></div>
+            <div id="grid-legend" aria-label="Map and process state legend">
+                <span><i class="legend-dot state-ready"></i>Ready</span>
+                <span><i class="legend-dot state-running"></i>Running</span>
+                <span><i class="legend-dot state-blocked"></i>Blocked</span>
+                <span><i class="legend-dot state-terminated"></i>Terminated</span>
+                <span><i class="legend-cell">H</i>Hangar</span>
+                <span><i class="legend-cell">M</i>Memory</span>
+                <span><i class="legend-cell">S</i>Sensor Buffer</span>
+                <span><i class="legend-cell">L</i>Log/File I/O</span>
+            </div>
+        </div>
+
+        <!-- SIDE PANELS -->
+        <div id="side-panels">
+            <!-- Process Panel -->
+            <div class="panel" id="process-panel">
+                <h3>Drone Process State</h3>
+                <div id="process-cards"></div>
+            </div>
+
+            <!-- Scheduler Panel -->
+            <div class="panel" id="scheduler-panel">
+                <h3>Scheduler Queue</h3>
+                <div id="scheduler-content"></div>
+            </div>
+
+            <!-- Memory Panel -->
+            <div class="panel" id="memory-panel">
+                <h3>Memory Frames</h3>
+                <div id="memory-content"></div>
+            </div>
+
+            <!-- Filesystem Panel -->
+            <div class="panel" id="fs-panel">
+                <h3>Filesystem</h3>
+                <div id="fs-content"></div>
+            </div>
+
+            <!-- Buffer Panel -->
+            <div class="panel" id="buffer-panel">
+                <h3>Ring Buffer</h3>
+                <div id="buffer-content"></div>
+            </div>
+
+            <div class="panel" id="resource-panel">
+                <h3>Resource Ownership</h3>
+                <div id="resource-content"></div>
+            </div>
+
+            <!-- Log Panel -->
+            <div class="panel" id="log-panel">
+                <h3>Event Log</h3>
+                <div id="log-filters"></div>
+                <div id="log-entries" aria-live="polite"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Intro Modal -->
+    <div id="intro-overlay" class="show">
+        <div id="intro-panel" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+            <button id="intro-close" type="button" aria-label="Close introduction">&times;</button>
+            <div class="intro-kicker">Presentation Mode</div>
+            <h2 id="intro-title">Drone Fleet OS Simulator</h2>
+            <p id="intro-body">
+                Bu dashboard C ile yazılmış mini OS simülatörünü canlı izletir. Drone'lar process/thread,
+                grid kaynaklar OS resource, paneller kernel alt sistemlerini temsil eder.
+            </p>
+            <div id="intro-points"></div>
+            <div id="intro-progress" aria-label="Tour progress"></div>
+            <div class="intro-actions">
+                <button id="intro-back" type="button">Back</button>
+                <button id="intro-next" type="button">Next</button>
+                <button id="intro-start" type="button">Start Guided Demo</button>
+                <button id="intro-skip" type="button">Skip</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comparison Modal -->
+    <div id="comparison-panel" role="dialog" aria-modal="true" aria-labelledby="comparison-title">
+        <button id="cmp-close" type="button" aria-label="Close comparison">&times;</button>
+        <h3 id="comparison-title">RR vs MLFQ Comparison</h3>
+        <p class="comparison-note">RR baseline scheduler, MLFQ enhanced scheduler. Lower wait/turnaround and controlled context switching are the key discussion points.</p>
+        <div id="comparison-content"></div>
+    </div>
+
+    <!-- Tooltip -->
+    <div class="cell-tooltip" id="cell-tooltip"></div>
+
     <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

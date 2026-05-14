@@ -1,22 +1,14 @@
 #!/bin/bash
 set -e
+echo "=== FleetOS Dashboard ==="
 
-echo "FleetOS Build & Run Script"
+cd "$(dirname "$0")"
 
-# Build C simulator
 make clean && make
 
-# Start Python dashboard in background
+echo "Starting dashboard on http://localhost:8080"
 cd web
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r ../requirements.txt
-python3 server.py &
-SERVER_PID=$!
-cd ..
-
-# Run simulator
-./drone_fleet_os "$@"
-
-# Cleanup
-kill $SERVER_PID 2>/dev/null || true
+python3 -m venv .venv 2>/dev/null || true
+source .venv/bin/activate 2>/dev/null || true
+pip install -q flask flask-socketio 2>/dev/null || true
+python3 server.py
